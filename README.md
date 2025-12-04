@@ -85,3 +85,14 @@ Then open http://localhost:5173 in your browser.
 - **Frontend:** React + Vite, react-markdown for rendering
 - **Storage:** JSON files in `data/conversations/`
 - **Package Management:** uv for Python, npm for JavaScript
+
+## Modifications
+
+This is a fork of [Andrej Karpathy's original LLM Council](https://github.com/karpathy/llm-council) with the following additions:
+
+- **Model Selection UI**: Added a settings panel in the sidebar to select which models participate in the council (2-6 models) and choose the chairman model
+- **Clarification System**: Before consulting the council, the system can ask clarifying questions if the user's query is ambiguous or missing context
+- **Dynamic Model Configuration**: Models can be changed per-conversation through the UI instead of requiring code changes
+- **Additional Models**: Added support for more models including DeepSeek
+
+All original functionality remains intact. The core 3-stage council process is unchanged.
