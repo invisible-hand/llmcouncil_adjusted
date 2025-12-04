@@ -9,6 +9,8 @@ export default function ChatInterface({
   conversation,
   onSendMessage,
   isLoading,
+  pendingClarification,
+  onSkipClarification
 }) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef(null);
@@ -19,7 +21,7 @@ export default function ChatInterface({
 
   useEffect(() => {
     scrollToBottom();
-  }, [conversation]);
+  }, [conversation, pendingClarification]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -48,6 +50,8 @@ export default function ChatInterface({
     );
   }
 
+  const showInputForm = conversation.messages.length === 0 || pendingClarification;
+
   return (
     <div className="chat-interface">
       <div className="messages-container">
@@ -71,6 +75,29 @@ export default function ChatInterface({
               ) : (
                 <div className="assistant-message">
                   <div className="message-label">LLM Council</div>
+
+                  {/* Clarification check */}
+                  {msg.loading?.clarification && (
+                    <div className="stage-loading">
+                      <div className="spinner"></div>
+                      <span>Analyzing your question...</span>
+                    </div>
+                  )}
+
+                  {/* Clarification needed */}
+                  {msg.clarification?.needs_clarification && (
+                    <div className="clarification-box">
+                      <div className="clarification-header">
+                        <span className="clarification-icon">❓</span>
+                        <span>Before consulting the council, could you clarify:</span>
+                      </div>
+                      <ul className="clarification-questions">
+                        {msg.clarification.questions.map((q, i) => (
+                          <li key={i}>{q}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
                   {/* Stage 1 */}
                   {msg.loading?.stage1 && (
@@ -110,7 +137,7 @@ export default function ChatInterface({
           ))
         )}
 
-        {isLoading && (
+        {isLoading && !pendingClarification && (
           <div className="loading-indicator">
             <div className="spinner"></div>
             <span>Consulting the council...</span>
@@ -120,24 +147,44 @@ export default function ChatInterface({
         <div ref={messagesEndRef} />
       </div>
 
-      {conversation.messages.length === 0 && (
+      {showInputForm && (
         <form className="input-form" onSubmit={handleSubmit}>
-          <textarea
-            className="message-input"
-            placeholder="Ask your question... (Shift+Enter for new line, Enter to send)"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isLoading}
-            rows={3}
-          />
-          <button
-            type="submit"
-            className="send-button"
-            disabled={!input.trim() || isLoading}
-          >
-            Send
-          </button>
+          <div className="input-wrapper">
+            {pendingClarification && (
+              <div className="clarification-prompt">
+                <span>Provide additional context or </span>
+                <button 
+                  type="button" 
+                  className="skip-clarification-btn"
+                  onClick={onSkipClarification}
+                >
+                  skip and ask anyway
+                </button>
+              </div>
+            )}
+            <div className="input-row">
+              <textarea
+                className="message-input"
+                placeholder={
+                  pendingClarification 
+                    ? "Provide additional context..." 
+                    : "Ask your question... (Shift+Enter for new line, Enter to send)"
+                }
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={isLoading}
+                rows={3}
+              />
+              <button
+                type="submit"
+                className="send-button"
+                disabled={!input.trim() || isLoading}
+              >
+                Send
+              </button>
+            </div>
+          </div>
         </form>
       )}
     </div>

@@ -17,6 +17,17 @@ export const api = {
   },
 
   /**
+   * Get available models.
+   */
+  async getModels() {
+    const response = await fetch(`${API_BASE}/api/models`);
+    if (!response.ok) {
+      throw new Error('Failed to get models');
+    }
+    return response.json();
+  },
+
+  /**
    * Create a new conversation.
    */
   async createConversation() {
@@ -49,7 +60,8 @@ export const api = {
   /**
    * Send a message in a conversation.
    */
-  async sendMessage(conversationId, content) {
+  async sendMessage(conversationId, content, options = {}) {
+    const { chairmanModel = null, councilModels = null, skipClarification = false } = options;
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message`,
       {
@@ -57,7 +69,12 @@ export const api = {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ 
+          content, 
+          chairman_model: chairmanModel,
+          council_models: councilModels,
+          skip_clarification: skipClarification
+        }),
       }
     );
     if (!response.ok) {
@@ -71,9 +88,11 @@ export const api = {
    * @param {string} conversationId - The conversation ID
    * @param {string} content - The message content
    * @param {function} onEvent - Callback function for each event: (eventType, data) => void
+   * @param {object} options - Optional settings { chairmanModel, councilModels, skipClarification }
    * @returns {Promise<void>}
    */
-  async sendMessageStream(conversationId, content, onEvent) {
+  async sendMessageStream(conversationId, content, onEvent, options = {}) {
+    const { chairmanModel = null, councilModels = null, skipClarification = false } = options;
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message/stream`,
       {
@@ -81,7 +100,12 @@ export const api = {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ 
+          content, 
+          chairman_model: chairmanModel,
+          council_models: councilModels,
+          skip_clarification: skipClarification
+        }),
       }
     );
 

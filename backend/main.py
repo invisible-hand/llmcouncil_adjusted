@@ -4,13 +4,22 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import uuid
 import json
 import asyncio
 
 from . import storage
-from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
+from .council import (
+    run_full_council, 
+    generate_conversation_title, 
+    stage1_collect_responses, 
+    stage2_collect_rankings, 
+    stage3_synthesize_final, 
+    calculate_aggregate_rankings,
+    check_for_clarifications
+)
+from .config import AVAILABLE_MODELS, DEFAULT_COUNCIL_MODELS, DEFAULT_CHAIRMAN_MODEL
 
 app = FastAPI(title="LLM Council API")
 
@@ -32,6 +41,21 @@ class CreateConversationRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     """Request to send a message in a conversation."""
     content: str
+    chairman_model: Optional[str] = None
+    council_models: Optional[List[str]] = None
+    skip_clarification: Optional[bool] = False
+
+
+class ClarificationResponse(BaseModel):
+    """Response for clarification check."""
+    content: str
+
+
+class ModelList(BaseModel):
+    """List of available models."""
+    available_models: List[str]
+    default_council_models: List[str]
+    default_chairman_model: str
 
 
 class ConversationMetadata(BaseModel):
@@ -54,6 +78,16 @@ class Conversation(BaseModel):
 async def root():
     """Health check endpoint."""
     return {"status": "ok", "service": "LLM Council API"}
+
+
+@app.get("/api/models", response_model=ModelList)
+async def list_models():
+    """List available models and defaults."""
+    return {
+        "available_models": AVAILABLE_MODELS,
+        "default_council_models": DEFAULT_COUNCIL_MODELS,
+        "default_chairman_model": DEFAULT_CHAIRMAN_MODEL
+    }
 
 
 @app.get("/api/conversations", response_model=List[ConversationMetadata])
@@ -103,7 +137,9 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
 
     # Run the 3-stage council process
     stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
-        request.content
+        request.content,
+        chairman_model_override=request.chairman_model,
+        council_models=request.council_models
     )
 
     # Add assistant message with all stages
@@ -147,20 +183,48 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             if is_first_message:
                 title_task = asyncio.create_task(generate_conversation_title(request.content))
 
+            # Check for clarifications (unless skipped)
+            if not request.skip_clarification:
+                yield f"data: {json.dumps({'type': 'clarification_start'})}\n\n"
+                clarification_result = await check_for_clarifications(request.content)
+                
+                if clarification_result and clarification_result.get('needs_clarification'):
+                    yield f"data: {json.dumps({'type': 'clarification_needed', 'data': clarification_result})}\n\n"
+                    # Don't proceed with council - wait for user to respond
+                    if title_task:
+                        title = await title_task
+                        storage.update_conversation_title(conversation_id, title)
+                        yield f"data: {json.dumps({'type': 'title_complete', 'data': {'title': title}})}\n\n"
+                    return
+                else:
+                    yield f"data: {json.dumps({'type': 'clarification_complete', 'data': {'needs_clarification': False}})}\n\n"
+
+            # Get council models to use
+            council_models = request.council_models
+
             # Stage 1: Collect responses
             yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
-            stage1_results = await stage1_collect_responses(request.content)
+            stage1_results = await stage1_collect_responses(request.content, council_models=council_models)
             yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
 
             # Stage 2: Collect rankings
             yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            stage2_results, label_to_model = await stage2_collect_rankings(request.content, stage1_results)
+            stage2_results, label_to_model = await stage2_collect_rankings(
+                request.content, 
+                stage1_results,
+                council_models=council_models
+            )
             aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
             yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
 
             # Stage 3: Synthesize final answer
             yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-            stage3_result = await stage3_synthesize_final(request.content, stage1_results, stage2_results)
+            stage3_result = await stage3_synthesize_final(
+                request.content, 
+                stage1_results, 
+                stage2_results,
+                chairman_model_override=request.chairman_model
+            )
             yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
             # Wait for title generation if it was started

@@ -101,12 +101,46 @@
 }
 
 .input-form {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
   padding: 24px;
   border-top: 1px solid #e0e0e0;
   background: #fafafa;
+}
+
+.input-wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 12px;
+}
+
+.clarification-prompt {
+  font-size: 14px;
+  color: #666;
+  padding: 8px 12px;
+  background: #fff8e6;
+  border-radius: 6px;
+  border: 1px solid #ffe0a3;
+}
+
+.skip-clarification-btn {
+  background: none;
+  border: none;
+  color: #4a90e2;
+  cursor: pointer;
+  font-size: 14px;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.skip-clarification-btn:hover {
+  color: #357abd;
+}
+
+.input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  width: 100%;
 }
 
 .message-input {
@@ -160,4 +194,40 @@
   cursor: not-allowed;
   background: #ccc;
   border-color: #ccc;
+}
+
+/* Clarification Box */
+.clarification-box {
+  background: #fff8e6;
+  border: 1px solid #ffe0a3;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+}
+
+.clarification-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: #856404;
+  margin-bottom: 12px;
+}
+
+.clarification-icon {
+  font-size: 18px;
+}
+
+.clarification-questions {
+  margin: 0;
+  padding-left: 24px;
+  color: #856404;
+}
+
+.clarification-questions li {
+  margin-bottom: 6px;
+}
+
+.clarification-questions li:last-child {
+  margin-bottom: 0;
 }

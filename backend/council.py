@@ -1,24 +1,88 @@
 """3-stage LLM Council orchestration."""
 
-from typing import List, Dict, Any, Tuple
+import json
+import re
+from collections import defaultdict
+from typing import List, Dict, Any, Tuple, Optional
 from .openrouter import query_models_parallel, query_model
-from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
+from .config import DEFAULT_COUNCIL_MODELS, DEFAULT_CHAIRMAN_MODEL, CLARIFIER_MODEL
 
 
-async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
+async def check_for_clarifications(user_query: str) -> Optional[Dict[str, Any]]:
+    """
+    Check if the user's query needs clarification before proceeding.
+    
+    Args:
+        user_query: The user's question
+        
+    Returns:
+        Dict with 'needs_clarification' bool and 'questions' list, or None if error
+    """
+    clarification_prompt = f"""You are a helpful assistant that determines if a user's question needs clarification before it can be properly answered by a council of AI models.
+
+Analyze the following question and determine if ANY of these apply:
+1. The question is ambiguous and could be interpreted multiple ways
+2. Important context is missing (e.g., programming language, specific use case, time period, location)
+3. The scope is unclear (e.g., "best" without criteria, "compare" without specifying what aspects)
+4. Technical terms could refer to different things
+5. The question assumes knowledge that wasn't provided
+
+If clarification is needed, provide 1-3 SHORT, SPECIFIC questions to ask the user.
+If the question is clear enough to answer, indicate no clarification is needed.
+
+User's question: {user_query}
+
+Respond in this EXACT JSON format (no markdown, just raw JSON):
+{{"needs_clarification": true/false, "questions": ["question 1", "question 2"] or []}}
+
+Only include questions if needs_clarification is true. Keep questions concise (under 100 characters each)."""
+
+    messages = [{"role": "user", "content": clarification_prompt}]
+    
+    response = await query_model(CLARIFIER_MODEL, messages, timeout=30.0)
+    
+    if response is None:
+        return None
+    
+    content = response.get('content', '').strip()
+    
+    try:
+        # Clean up potential markdown formatting
+        if content.startswith('```'):
+            content = content.split('```')[1]
+            if content.startswith('json'):
+                content = content[4:]
+        content = content.strip()
+        
+        result = json.loads(content)
+        return {
+            "needs_clarification": result.get("needs_clarification", False),
+            "questions": result.get("questions", [])
+        }
+    except json.JSONDecodeError:
+        # If parsing fails, assume no clarification needed
+        return {"needs_clarification": False, "questions": []}
+
+
+async def stage1_collect_responses(
+    user_query: str,
+    council_models: List[str] = None
+) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
     Args:
         user_query: The user's question
+        council_models: Optional list of models to use (defaults to DEFAULT_COUNCIL_MODELS)
 
     Returns:
         List of dicts with 'model' and 'response' keys
     """
+    models_to_use = council_models if council_models else DEFAULT_COUNCIL_MODELS
     messages = [{"role": "user", "content": user_query}]
 
     # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(models_to_use, messages)
 
     # Format results
     stage1_results = []
@@ -34,7 +98,8 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
 
 async def stage2_collect_rankings(
     user_query: str,
-    stage1_results: List[Dict[str, Any]]
+    stage1_results: List[Dict[str, Any]],
+    council_models: List[str] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -42,10 +107,13 @@ async def stage2_collect_rankings(
     Args:
         user_query: The original user query
         stage1_results: Results from Stage 1
+        council_models: Optional list of models to use (defaults to DEFAULT_COUNCIL_MODELS)
 
     Returns:
         Tuple of (rankings list, label_to_model mapping)
     """
+    models_to_use = council_models if council_models else DEFAULT_COUNCIL_MODELS
+    
     # Create anonymized labels for responses (Response A, Response B, etc.)
     labels = [chr(65 + i) for i in range(len(stage1_results))]  # A, B, C, ...
 
@@ -95,7 +163,7 @@ Now provide your evaluation and ranking:"""
     messages = [{"role": "user", "content": ranking_prompt}]
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(models_to_use, messages)
 
     # Format results
     stage2_results = []
@@ -115,7 +183,8 @@ Now provide your evaluation and ranking:"""
 async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]]
+    stage2_results: List[Dict[str, Any]],
+    chairman_model_override: str = None
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -124,6 +193,7 @@ async def stage3_synthesize_final(
         user_query: The original user query
         stage1_results: Individual model responses from Stage 1
         stage2_results: Rankings from Stage 2
+        chairman_model_override: Optional override for the chairman model
 
     Returns:
         Dict with 'model' and 'response' keys
@@ -158,18 +228,20 @@ Provide a clear, well-reasoned final answer that represents the council's collec
 
     messages = [{"role": "user", "content": chairman_prompt}]
 
+    model_to_use = chairman_model_override if chairman_model_override else DEFAULT_CHAIRMAN_MODEL
+
     # Query the chairman model
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    response = await query_model(model_to_use, messages)
 
     if response is None:
         # Fallback if chairman fails
         return {
-            "model": CHAIRMAN_MODEL,
+            "model": model_to_use,
             "response": "Error: Unable to generate final synthesis."
         }
 
     return {
-        "model": CHAIRMAN_MODEL,
+        "model": model_to_use,
         "response": response.get('content', '')
     }
 
@@ -184,8 +256,6 @@ def parse_ranking_from_text(ranking_text: str) -> List[str]:
     Returns:
         List of response labels in ranked order
     """
-    import re
-
     # Look for "FINAL RANKING:" section
     if "FINAL RANKING:" in ranking_text:
         # Extract everything after "FINAL RANKING:"
@@ -222,8 +292,6 @@ def calculate_aggregate_rankings(
     Returns:
         List of dicts with model name and average rank, sorted best to worst
     """
-    from collections import defaultdict
-
     # Track positions for each model
     model_positions = defaultdict(list)
 
@@ -293,18 +361,24 @@ Title:"""
     return title
 
 
-async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
+async def run_full_council(
+    user_query: str, 
+    chairman_model_override: str = None,
+    council_models: List[str] = None
+) -> Tuple[List, List, Dict, Dict]:
     """
     Run the complete 3-stage council process.
 
     Args:
         user_query: The user's question
+        chairman_model_override: Optional override for the chairman model
+        council_models: Optional list of council member models
 
     Returns:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata)
     """
     # Stage 1: Collect individual responses
-    stage1_results = await stage1_collect_responses(user_query)
+    stage1_results = await stage1_collect_responses(user_query, council_models=council_models)
 
     # If no models responded successfully, return error
     if not stage1_results:
@@ -314,7 +388,11 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
         }, {}
 
     # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results)
+    stage2_results, label_to_model = await stage2_collect_rankings(
+        user_query, 
+        stage1_results,
+        council_models=council_models
+    )
 
     # Calculate aggregate rankings
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
@@ -323,7 +401,8 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     stage3_result = await stage3_synthesize_final(
         user_query,
         stage1_results,
-        stage2_results
+        stage2_results,
+        chairman_model_override=chairman_model_override
     )
 
     # Prepare metadata
