@@ -1,9 +1,12 @@
-"""FastAPI backend for LLM Council."""
+"""Starlette backend for LLM Council (Vercel-compatible, no Pydantic)."""
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse, StreamingResponse
+from starlette.routing import Route
+from starlette.requests import Request
 from typing import List, Dict, Any, Optional
 import uuid
 import json
@@ -23,100 +26,41 @@ from .council import (
 )
 from .config import AVAILABLE_MODELS, DEFAULT_COUNCIL_MODELS, DEFAULT_CHAIRMAN_MODEL, DEFAULT_STT_MODEL
 
-app = FastAPI(title="LLM Council API")
 
-# Enable CORS for local development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-class CreateConversationRequest(BaseModel):
-    """Request to create a new conversation."""
-    pass
-
-
-class SendMessageRequest(BaseModel):
-    """Request to send a message in a conversation."""
-    content: str
-    chairman_model: Optional[str] = None
-    council_models: Optional[List[str]] = None
-    skip_clarification: Optional[bool] = False
-    # Frontend-managed persistence (e.g., localStorage) may still call this endpoint.
-    # This flag lets the client indicate whether to generate a title for the first message.
-    is_first_message: Optional[bool] = False
-
-
-class ClarificationResponse(BaseModel):
-    """Response for clarification check."""
-    content: str
-
-
-class ModelList(BaseModel):
-    """List of available models."""
-    available_models: List[str]
-    default_council_models: List[str]
-    default_chairman_model: str
-
-
-class SpeechToTextResponse(BaseModel):
-    """Speech-to-text response."""
-    text: str
-
-
-class ConversationMetadata(BaseModel):
-    """Conversation metadata for list view."""
-    id: str
-    created_at: str
-    title: str
-    message_count: int
-
-
-class Conversation(BaseModel):
-    """Full conversation with all messages."""
-    id: str
-    created_at: str
-    title: str
-    messages: List[Dict[str, Any]]
-
-
-@app.get("/")
-async def root():
+async def root(request: Request):
     """Health check endpoint."""
-    return {"status": "ok", "service": "LLM Council API"}
+    return JSONResponse({"status": "ok", "service": "LLM Council API"})
 
 
-@app.get("/api/models", response_model=ModelList)
-async def list_models():
+async def list_models(request: Request):
     """List available models and defaults."""
-    return {
+    return JSONResponse({
         "available_models": AVAILABLE_MODELS,
         "default_council_models": DEFAULT_COUNCIL_MODELS,
         "default_chairman_model": DEFAULT_CHAIRMAN_MODEL
-    }
+    })
 
 
-@app.post("/api/stt", response_model=SpeechToTextResponse)
-async def speech_to_text(
-    file: UploadFile = File(...),
-    format: Optional[str] = Form(None),
-    model: Optional[str] = Form(None),
-):
+async def speech_to_text(request: Request):
     """
     Transcribe audio to text via an audio-capable OpenRouter model.
 
     The frontend sends WAV by default.
     """
+    form = await request.form()
+    file = form.get("file")
+    audio_format = form.get("format") or "wav"
+    model = form.get("model")
+    
+    if not file or not hasattr(file, 'read'):
+        raise HTTPException(status_code=400, detail="No audio file provided")
+    
     audio_bytes = await file.read()
     if not audio_bytes:
-        return {"text": ""}
+        return JSONResponse({"text": ""})
 
     base64_audio = base64.b64encode(audio_bytes).decode("ascii")
-    audio_format = (format or "wav").lower()
+    audio_format = audio_format.lower()
 
     # Pick a sensible default, but try a few fallbacks in case the user's OpenRouter
     # account/provider doesn't support the first choice.
@@ -153,90 +97,110 @@ async def speech_to_text(
 
         content = result.get("content")
         if isinstance(content, str):
-            return {"text": content.strip()}
+            return JSONResponse({"text": content.strip()})
         if isinstance(content, list):
             # Some providers return an array of content parts; pull out text segments.
             parts = []
             for item in content:
                 if isinstance(item, dict) and isinstance(item.get("text"), str):
                     parts.append(item["text"])
-            return {"text": "\n".join(parts).strip()}
+            return JSONResponse({"text": "\n".join(parts).strip()})
 
         last_error = f"Unexpected STT response content type from model {m}"
 
     raise HTTPException(status_code=502, detail=last_error or "STT request failed")
 
 
-@app.get("/api/conversations", response_model=List[ConversationMetadata])
-async def list_conversations():
+async def list_conversations(request: Request):
     """List all conversations (metadata only)."""
-    return storage.list_conversations()
+    conversations = storage.list_conversations()
+    return JSONResponse(conversations)
 
 
-@app.post("/api/conversations", response_model=Conversation)
-async def create_conversation(request: CreateConversationRequest):
+async def create_conversation(request: Request):
     """Create a new conversation."""
     conversation_id = str(uuid.uuid4())
     conversation = storage.create_conversation(conversation_id)
-    return conversation
+    return JSONResponse(conversation)
 
 
-@app.get("/api/conversations/{conversation_id}", response_model=Conversation)
-async def get_conversation(conversation_id: str):
+async def get_conversation(request: Request):
     """Get a specific conversation with all its messages."""
+    conversation_id = request.path_params['conversation_id']
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return conversation
+    return JSONResponse(conversation)
 
 
-@app.post("/api/conversations/{conversation_id}/message")
-async def send_message(conversation_id: str, request: SendMessageRequest):
+async def send_message(request: Request):
     """
     Send a message and run the 3-stage council process.
     Returns the complete response with all stages.
     """
+    conversation_id = request.path_params['conversation_id']
+    body = await request.json()
+    
+    content = body.get("content")
+    chairman_model = body.get("chairman_model")
+    council_models = body.get("council_models")
+    is_first_message = body.get("is_first_message", False)
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="Content is required")
+    
     # Stateless mode: we don't persist conversations on the server (works on Vercel).
     # If the client says this is the first message, we can still generate a title.
     title: Optional[str] = None
-    if request.is_first_message:
-        title = await generate_conversation_title(request.content)
+    if is_first_message:
+        title = await generate_conversation_title(content)
 
     # Run the 3-stage council process
     stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
-        request.content,
-        chairman_model_override=request.chairman_model,
-        council_models=request.council_models
+        content,
+        chairman_model_override=chairman_model,
+        council_models=council_models
     )
 
     # Return the complete response with metadata
     if title:
         metadata = {**metadata, "title": title}
-    return {
+    return JSONResponse({
         "stage1": stage1_results,
         "stage2": stage2_results,
         "stage3": stage3_result,
         "metadata": metadata
-    }
+    })
 
 
-@app.post("/api/conversations/{conversation_id}/message/stream")
-async def send_message_stream(conversation_id: str, request: SendMessageRequest):
+async def send_message_stream(request: Request):
     """
     Send a message and stream the 3-stage council process.
     Returns Server-Sent Events as each stage completes.
     """
+    conversation_id = request.path_params['conversation_id']
+    body = await request.json()
+    
+    content = body.get("content")
+    chairman_model = body.get("chairman_model")
+    council_models = body.get("council_models")
+    skip_clarification = body.get("skip_clarification", False)
+    is_first_message = body.get("is_first_message", False)
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="Content is required")
+    
     async def event_generator():
         try:
             # Start title generation in parallel (don't await yet)
             title_task = None
-            if request.is_first_message:
-                title_task = asyncio.create_task(generate_conversation_title(request.content))
+            if is_first_message:
+                title_task = asyncio.create_task(generate_conversation_title(content))
 
             # Check for clarifications (unless skipped)
-            if not request.skip_clarification:
+            if not skip_clarification:
                 yield f"data: {json.dumps({'type': 'clarification_start'})}\n\n"
-                clarification_result = await check_for_clarifications(request.content)
+                clarification_result = await check_for_clarifications(content)
                 
                 if clarification_result and clarification_result.get('needs_clarification'):
                     yield f"data: {json.dumps({'type': 'clarification_needed', 'data': clarification_result})}\n\n"
@@ -248,18 +212,15 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 else:
                     yield f"data: {json.dumps({'type': 'clarification_complete', 'data': {'needs_clarification': False}})}\n\n"
 
-            # Get council models to use
-            council_models = request.council_models
-
             # Stage 1: Collect responses
             yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
-            stage1_results = await stage1_collect_responses(request.content, council_models=council_models)
+            stage1_results = await stage1_collect_responses(content, council_models=council_models)
             yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
 
             # Stage 2: Collect rankings
             yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
             stage2_results, label_to_model = await stage2_collect_rankings(
-                request.content, 
+                content, 
                 stage1_results,
                 council_models=council_models
             )
@@ -269,10 +230,10 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             # Stage 3: Synthesize final answer
             yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
             stage3_result = await stage3_synthesize_final(
-                request.content, 
+                content, 
                 stage1_results, 
                 stage2_results,
-                chairman_model_override=request.chairman_model
+                chairman_model_override=chairman_model
             )
             yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
@@ -297,6 +258,32 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         }
     )
 
+
+# Define routes
+routes = [
+    Route("/", root, methods=["GET"]),
+    Route("/api/models", list_models, methods=["GET"]),
+    Route("/api/stt", speech_to_text, methods=["POST"]),
+    Route("/api/conversations", list_conversations, methods=["GET"]),
+    Route("/api/conversations", create_conversation, methods=["POST"]),
+    Route("/api/conversations/{conversation_id}", get_conversation, methods=["GET"]),
+    Route("/api/conversations/{conversation_id}/message", send_message, methods=["POST"]),
+    Route("/api/conversations/{conversation_id}/message/stream", send_message_stream, methods=["POST"]),
+]
+
+# Create Starlette app with CORS middleware
+app = Starlette(
+    routes=routes,
+    middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["http://localhost:5173", "http://localhost:3000"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    ],
+)
 
 if __name__ == "__main__":
     import uvicorn
