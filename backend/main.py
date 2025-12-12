@@ -4,14 +4,17 @@ from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse, StreamingResponse
-from starlette.routing import Route
+from starlette.responses import JSONResponse, StreamingResponse, FileResponse
+from starlette.routing import Route, Mount
+from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
 from typing import List, Dict, Any, Optional
 import uuid
 import json
 import asyncio
 import base64
+import os
+from pathlib import Path
 
 from . import storage
 from . import openrouter
@@ -259,6 +262,19 @@ async def send_message_stream(request: Request):
     )
 
 
+# Determine static files directory
+# On Vercel, check if public/ exists (from build), otherwise use frontend/dist for local dev
+STATIC_DIR = Path(__file__).parent.parent / "public"
+if not STATIC_DIR.exists():
+    STATIC_DIR = Path(__file__).parent.parent / "frontend" / "dist"
+
+async def serve_spa(request: Request):
+    """Serve the SPA index.html for all non-API routes."""
+    index_path = STATIC_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return JSONResponse({"error": "Frontend not built"}, status_code=404)
+
 # Define routes
 routes = [
     Route("/api/health", root, methods=["GET"]),
@@ -270,6 +286,12 @@ routes = [
     Route("/api/conversations/{conversation_id}/message", send_message, methods=["POST"]),
     Route("/api/conversations/{conversation_id}/message/stream", send_message_stream, methods=["POST"]),
 ]
+
+# Add static files mount if directory exists
+if STATIC_DIR.exists():
+    routes.append(Mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets"))
+    # Catch-all route for SPA (must be last)
+    routes.append(Route("/{path:path}", serve_spa, methods=["GET"]))
 
 # Create Starlette app with CORS middleware
 app = Starlette(
