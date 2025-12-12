@@ -1,6 +1,6 @@
 """FastAPI backend for LLM Council."""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -8,8 +8,10 @@ from typing import List, Dict, Any, Optional
 import uuid
 import json
 import asyncio
+import base64
 
 from . import storage
+from . import openrouter
 from .council import (
     run_full_council, 
     generate_conversation_title, 
@@ -19,7 +21,7 @@ from .council import (
     calculate_aggregate_rankings,
     check_for_clarifications
 )
-from .config import AVAILABLE_MODELS, DEFAULT_COUNCIL_MODELS, DEFAULT_CHAIRMAN_MODEL
+from .config import AVAILABLE_MODELS, DEFAULT_COUNCIL_MODELS, DEFAULT_CHAIRMAN_MODEL, DEFAULT_STT_MODEL
 
 app = FastAPI(title="LLM Council API")
 
@@ -44,6 +46,9 @@ class SendMessageRequest(BaseModel):
     chairman_model: Optional[str] = None
     council_models: Optional[List[str]] = None
     skip_clarification: Optional[bool] = False
+    # Frontend-managed persistence (e.g., localStorage) may still call this endpoint.
+    # This flag lets the client indicate whether to generate a title for the first message.
+    is_first_message: Optional[bool] = False
 
 
 class ClarificationResponse(BaseModel):
@@ -56,6 +61,11 @@ class ModelList(BaseModel):
     available_models: List[str]
     default_council_models: List[str]
     default_chairman_model: str
+
+
+class SpeechToTextResponse(BaseModel):
+    """Speech-to-text response."""
+    text: str
 
 
 class ConversationMetadata(BaseModel):
@@ -90,6 +100,73 @@ async def list_models():
     }
 
 
+@app.post("/api/stt", response_model=SpeechToTextResponse)
+async def speech_to_text(
+    file: UploadFile = File(...),
+    format: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
+):
+    """
+    Transcribe audio to text via an audio-capable OpenRouter model.
+
+    The frontend sends WAV by default.
+    """
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        return {"text": ""}
+
+    base64_audio = base64.b64encode(audio_bytes).decode("ascii")
+    audio_format = (format or "wav").lower()
+
+    # Pick a sensible default, but try a few fallbacks in case the user's OpenRouter
+    # account/provider doesn't support the first choice.
+    candidate_models = [m for m in [model, DEFAULT_STT_MODEL] if m]
+    for fallback in ["google/gemini-2.5-flash", "openai/gpt-4o-mini-transcribe", "openai/gpt-4o-transcribe"]:
+        if fallback not in candidate_models:
+            candidate_models.append(fallback)
+
+    messages: List[Dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Transcribe the audio to plain text. "
+                        "Return only the transcript, with no extra commentary."
+                    ),
+                },
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": base64_audio, "format": audio_format},
+                },
+            ],
+        }
+    ]
+
+    last_error: Optional[str] = None
+    for m in candidate_models:
+        result = await openrouter.query_model(m, messages, timeout=300.0)
+        if not result:
+            last_error = f"STT request failed for model {m}"
+            continue
+
+        content = result.get("content")
+        if isinstance(content, str):
+            return {"text": content.strip()}
+        if isinstance(content, list):
+            # Some providers return an array of content parts; pull out text segments.
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return {"text": "\n".join(parts).strip()}
+
+        last_error = f"Unexpected STT response content type from model {m}"
+
+    raise HTTPException(status_code=502, detail=last_error or "STT request failed")
+
+
 @app.get("/api/conversations", response_model=List[ConversationMetadata])
 async def list_conversations():
     """List all conversations (metadata only)."""
@@ -119,21 +196,11 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     Send a message and run the 3-stage council process.
     Returns the complete response with all stages.
     """
-    # Check if conversation exists
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    # Check if this is the first message
-    is_first_message = len(conversation["messages"]) == 0
-
-    # Add user message
-    storage.add_user_message(conversation_id, request.content)
-
-    # If this is the first message, generate a title
-    if is_first_message:
+    # Stateless mode: we don't persist conversations on the server (works on Vercel).
+    # If the client says this is the first message, we can still generate a title.
+    title: Optional[str] = None
+    if request.is_first_message:
         title = await generate_conversation_title(request.content)
-        storage.update_conversation_title(conversation_id, title)
 
     # Run the 3-stage council process
     stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
@@ -142,15 +209,9 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         council_models=request.council_models
     )
 
-    # Add assistant message with all stages
-    storage.add_assistant_message(
-        conversation_id,
-        stage1_results,
-        stage2_results,
-        stage3_result
-    )
-
     # Return the complete response with metadata
+    if title:
+        metadata = {**metadata, "title": title}
     return {
         "stage1": stage1_results,
         "stage2": stage2_results,
@@ -165,22 +226,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     Send a message and stream the 3-stage council process.
     Returns Server-Sent Events as each stage completes.
     """
-    # Check if conversation exists
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    # Check if this is the first message
-    is_first_message = len(conversation["messages"]) == 0
-
     async def event_generator():
         try:
-            # Add user message
-            storage.add_user_message(conversation_id, request.content)
-
             # Start title generation in parallel (don't await yet)
             title_task = None
-            if is_first_message:
+            if request.is_first_message:
                 title_task = asyncio.create_task(generate_conversation_title(request.content))
 
             # Check for clarifications (unless skipped)
@@ -193,7 +243,6 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     # Don't proceed with council - wait for user to respond
                     if title_task:
                         title = await title_task
-                        storage.update_conversation_title(conversation_id, title)
                         yield f"data: {json.dumps({'type': 'title_complete', 'data': {'title': title}})}\n\n"
                     return
                 else:
@@ -230,16 +279,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             # Wait for title generation if it was started
             if title_task:
                 title = await title_task
-                storage.update_conversation_title(conversation_id, title)
                 yield f"data: {json.dumps({'type': 'title_complete', 'data': {'title': title}})}\n\n"
-
-            # Save complete assistant message
-            storage.add_assistant_message(
-                conversation_id,
-                stage1_results,
-                stage2_results,
-                stage3_result
-            )
 
             # Send completion event
             yield f"data: {json.dumps({'type': 'complete'})}\n\n"

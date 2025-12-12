@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import { api } from './api';
+import { localConversations } from './localConversations';
 import './App.css';
 
 function App() {
@@ -35,12 +36,11 @@ function App() {
     }
   }, [currentConversationId]);
 
-  const loadConversations = async () => {
-    try {
-      const convs = await api.listConversations();
-      setConversations(convs);
-    } catch (error) {
-      console.error('Failed to load conversations:', error);
+  const loadConversations = () => {
+    const convs = localConversations.list();
+    setConversations(convs);
+    if (!currentConversationId && convs.length > 0) {
+      setCurrentConversationId(convs[0].id);
     }
   };
 
@@ -55,23 +55,17 @@ function App() {
     }
   };
 
-  const loadConversation = async (id) => {
-    try {
-      const conv = await api.getConversation(id);
-      setCurrentConversation(conv);
-    } catch (error) {
-      console.error('Failed to load conversation:', error);
-    }
+  const loadConversation = (id) => {
+    const conv = localConversations.get(id);
+    setCurrentConversation(conv);
   };
 
-  const handleNewConversation = async () => {
+  const handleNewConversation = () => {
     try {
-      const newConv = await api.createConversation();
-      setConversations([
-        { id: newConv.id, created_at: newConv.created_at, message_count: 0 },
-        ...conversations,
-      ]);
+      const { conversation: newConv, index } = localConversations.create();
+      setConversations(index);
       setCurrentConversationId(newConv.id);
+      setCurrentConversation(newConv);
       setPendingClarification(null);
       setOriginalQuery(null);
     } catch (error) {
@@ -85,8 +79,10 @@ function App() {
 
   const handleSendMessage = async (content, skipClarification = false) => {
     if (!currentConversationId) return;
+    if (!currentConversation) return;
 
     setIsLoading(true);
+    const isFirstMessage = (currentConversation.messages?.length || 0) === 0;
     
     // If this is a response to clarification questions, combine with original query
     let finalContent = content;
@@ -102,10 +98,12 @@ function App() {
     try {
       // Optimistically add user message to UI
       const userMessage = { role: 'user', content };
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: [...prev.messages, userMessage],
-      }));
+      setCurrentConversation((prev) => {
+        const next = { ...prev, messages: [...prev.messages, userMessage] };
+        localConversations.save(next);
+        setConversations(localConversations.list());
+        return next;
+      });
 
       // Create a partial assistant message that will be updated progressively
       const assistantMessage = {
@@ -124,10 +122,12 @@ function App() {
       };
 
       // Add the partial assistant message
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: [...prev.messages, assistantMessage],
-      }));
+      setCurrentConversation((prev) => {
+        const next = { ...prev, messages: [...prev.messages, assistantMessage] };
+        localConversations.save(next);
+        setConversations(localConversations.list());
+        return next;
+      });
 
       // Send message with streaming
       await api.sendMessageStream(
@@ -140,7 +140,9 @@ function App() {
                 const messages = [...prev.messages];
                 const lastMsg = messages[messages.length - 1];
                 lastMsg.loading.clarification = true;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               break;
 
@@ -150,7 +152,9 @@ function App() {
                 const lastMsg = messages[messages.length - 1];
                 lastMsg.clarification = event.data;
                 lastMsg.loading.clarification = false;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               setPendingClarification(event.data);
               setIsLoading(false);
@@ -161,7 +165,9 @@ function App() {
                 const messages = [...prev.messages];
                 const lastMsg = messages[messages.length - 1];
                 lastMsg.loading.clarification = false;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               break;
 
@@ -170,7 +176,9 @@ function App() {
                 const messages = [...prev.messages];
                 const lastMsg = messages[messages.length - 1];
                 lastMsg.loading.stage1 = true;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               break;
 
@@ -180,7 +188,9 @@ function App() {
                 const lastMsg = messages[messages.length - 1];
                 lastMsg.stage1 = event.data;
                 lastMsg.loading.stage1 = false;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               break;
 
@@ -189,7 +199,9 @@ function App() {
                 const messages = [...prev.messages];
                 const lastMsg = messages[messages.length - 1];
                 lastMsg.loading.stage2 = true;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               break;
 
@@ -200,7 +212,9 @@ function App() {
                 lastMsg.stage2 = event.data;
                 lastMsg.metadata = event.metadata;
                 lastMsg.loading.stage2 = false;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               break;
 
@@ -209,7 +223,9 @@ function App() {
                 const messages = [...prev.messages];
                 const lastMsg = messages[messages.length - 1];
                 lastMsg.loading.stage3 = true;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               break;
 
@@ -219,20 +235,25 @@ function App() {
                 const lastMsg = messages[messages.length - 1];
                 lastMsg.stage3 = event.data;
                 lastMsg.loading.stage3 = false;
-                return { ...prev, messages };
+                const next = { ...prev, messages };
+                localConversations.save(next);
+                return next;
               });
               break;
 
             case 'title_complete':
-              // Reload conversations to get updated title
-              loadConversations();
+              setCurrentConversation((prev) => {
+                const next = { ...prev, title: event.data?.title || prev.title };
+                localConversations.save(next);
+                setConversations(localConversations.list());
+                return next;
+              });
               break;
 
             case 'complete':
-              // Stream complete, reload conversations list
-              loadConversations();
               setIsLoading(false);
               setOriginalQuery(null);
+              setConversations(localConversations.list());
               break;
 
             case 'error':
@@ -247,16 +268,20 @@ function App() {
         {
           chairmanModel,
           councilModels,
-          skipClarification
+          skipClarification,
+          isFirstMessage
         }
       );
     } catch (error) {
       console.error('Failed to send message:', error);
       // Remove optimistic messages on error
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: prev.messages.slice(0, -2),
-      }));
+      setCurrentConversation((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev, messages: prev.messages.slice(0, -2) };
+        localConversations.save(next);
+        setConversations(localConversations.list());
+        return next;
+      });
       setIsLoading(false);
     }
   };

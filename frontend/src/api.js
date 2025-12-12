@@ -2,7 +2,8 @@
  * API client for the LLM Council backend.
  */
 
-const API_BASE = 'http://localhost:8001';
+const API_BASE =
+  import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? '' : 'http://localhost:8001');
 
 export const api = {
   /**
@@ -92,7 +93,7 @@ export const api = {
    * @returns {Promise<void>}
    */
   async sendMessageStream(conversationId, content, onEvent, options = {}) {
-    const { chairmanModel = null, councilModels = null, skipClarification = false } = options;
+    const { chairmanModel = null, councilModels = null, skipClarification = false, isFirstMessage = false } = options;
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message/stream`,
       {
@@ -104,7 +105,8 @@ export const api = {
           content, 
           chairman_model: chairmanModel,
           council_models: councilModels,
-          skip_clarification: skipClarification
+          skip_clarification: skipClarification,
+          is_first_message: isFirstMessage
         }),
       }
     );
@@ -135,5 +137,27 @@ export const api = {
         }
       }
     }
+  },
+
+  /**
+   * Speech-to-text: upload an audio blob and receive transcript text.
+   * @param {Blob} audioBlob
+   * @param {object} options - { format?: string, model?: string }
+   */
+  async speechToText(audioBlob, options = {}) {
+    const { format = 'wav', model = null } = options;
+    const form = new FormData();
+    form.append('file', audioBlob, `speech.${format}`);
+    form.append('format', format);
+    if (model) form.append('model', model);
+
+    const response = await fetch(`${API_BASE}/api/stt`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!response.ok) {
+      throw new Error('Failed to transcribe audio');
+    }
+    return response.json();
   },
 };

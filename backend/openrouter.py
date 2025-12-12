@@ -7,7 +7,7 @@ from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
 
 async def query_model(
     model: str,
-    messages: List[Dict[str, str]],
+    messages: List[Dict[str, Any]],
     timeout: float = 120.0
 ) -> Optional[Dict[str, Any]]:
     """
@@ -38,7 +38,16 @@ async def query_model(
                 headers=headers,
                 json=payload
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                # Minimal but actionable: include response body so we can fix schema/model issues.
+                body_preview = response.text
+                if len(body_preview) > 2000:
+                    body_preview = body_preview[:2000] + "...(truncated)"
+                print(
+                    f"Error querying model {model}: HTTP {response.status_code}. "
+                    f"Response: {body_preview}"
+                )
+                return None
 
             data = response.json()
             message = data['choices'][0]['message']
@@ -55,7 +64,7 @@ async def query_model(
 
 async def query_models_parallel(
     models: List[str],
-    messages: List[Dict[str, str]]
+    messages: List[Dict[str, Any]]
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """
     Query multiple models in parallel.

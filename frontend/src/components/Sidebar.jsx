@@ -34,11 +34,33 @@ export default function Sidebar({
         <div className="header-row">
           <h1>LLM Council</h1>
           <button 
-            className="settings-toggle" 
+            className={`settings-toggle ${showSettings ? 'active' : ''}`}
             onClick={() => setShowSettings(!showSettings)}
             title="Settings"
+            aria-label="Settings"
           >
-            ⚙️
+            <svg
+              className="settings-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+                stroke="currentColor"
+                strokeWidth="1.8"
+              />
+              <path
+                d="M19.4 15a8.44 8.44 0 0 0 .1-1 8.44 8.44 0 0 0-.1-1l2.1-1.6a.7.7 0 0 0 .2-.9l-2-3.4a.7.7 0 0 0-.9-.3l-2.5 1a8.2 8.2 0 0 0-1.7-1l-.4-2.7a.7.7 0 0 0-.7-.6h-4a.7.7 0 0 0-.7.6l-.4 2.7a8.2 8.2 0 0 0-1.7 1l-2.5-1a.7.7 0 0 0-.9.3l-2 3.4a.7.7 0 0 0 .2.9L4.6 13a8.44 8.44 0 0 0-.1 1 8.44 8.44 0 0 0 .1 1l-2.1 1.6a.7.7 0 0 0-.2.9l2 3.4c.2.3.6.4.9.3l2.5-1c.5.4 1.1.8 1.7 1l.4 2.7c.1.3.4.6.7.6h4c.3 0 .6-.2.7-.6l.4-2.7c.6-.2 1.2-.6 1.7-1l2.5 1c.3.1.7 0 .9-.3l2-3.4a.7.7 0 0 0-.2-.9L19.4 15Z"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+                opacity="0.95"
+              />
+            </svg>
           </button>
         </div>
         <button className="new-conversation-btn" onClick={onNewConversation}>

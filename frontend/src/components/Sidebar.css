@@ -26,17 +26,44 @@
 }
 
 .settings-toggle {
-  background: none;
-  border: none;
-  font-size: 18px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.08);
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  transition: background 0.2s;
+  padding: 0;
+  border-radius: 10px;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+  color: #4b5563;
 }
 
 .settings-toggle:hover {
-  background: #e0e0e0;
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(0, 0, 0, 0.14);
+  color: #111827;
+}
+
+.settings-toggle:active {
+  transform: translateY(0.5px);
+}
+
+.settings-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.18);
+  border-color: rgba(74, 144, 226, 0.55);
+}
+
+.settings-toggle.active {
+  background: rgba(74, 144, 226, 0.12);
+  border-color: rgba(74, 144, 226, 0.4);
+  color: #1f5fa8;
+}
+
+.settings-icon {
+  display: block;
 }
 
 .new-conversation-btn {
