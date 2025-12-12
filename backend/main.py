@@ -221,24 +221,38 @@ async def send_message_stream(request: Request):
             yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
 
             # Stage 2: Collect rankings
+            print(f"[Stream] Sending stage2_start")
             yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            stage2_results, label_to_model = await stage2_collect_rankings(
-                content, 
-                stage1_results,
-                council_models=council_models
-            )
-            aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
-            yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
+            try:
+                print(f"[Stream] Starting stage2_collect_rankings")
+                stage2_results, label_to_model = await stage2_collect_rankings(
+                    content, 
+                    stage1_results,
+                    council_models=council_models
+                )
+                print(f"[Stream] Stage 2 collected {len(stage2_results)} rankings")
+                aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+                print(f"[Stream] Sending stage2_complete")
+                yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
+                print(f"[Stream] stage2_complete sent")
+            except Exception as stage2_error:
+                print(f"[Stream] Stage 2 error: {stage2_error}")
+                yield f"data: {json.dumps({'type': 'error', 'message': f'Stage 2 failed: {str(stage2_error)}'})}\n\n"
+                return
 
             # Stage 3: Synthesize final answer
+            print(f"[Stream] Sending stage3_start")
             yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
+            print(f"[Stream] Starting stage3_synthesize_final")
             stage3_result = await stage3_synthesize_final(
                 content, 
                 stage1_results, 
                 stage2_results,
                 chairman_model_override=chairman_model
             )
+            print(f"[Stream] Sending stage3_complete")
             yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
+            print(f"[Stream] stage3_complete sent")
 
             # Wait for title generation if it was started
             if title_task:
