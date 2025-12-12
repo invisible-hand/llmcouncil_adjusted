@@ -261,7 +261,7 @@ async def send_message_stream(request: Request):
 
 # Define routes
 routes = [
-    Route("/", root, methods=["GET"]),
+    Route("/api/health", root, methods=["GET"]),
     Route("/api/models", list_models, methods=["GET"]),
     Route("/api/stt", speech_to_text, methods=["POST"]),
     Route("/api/conversations", list_conversations, methods=["GET"]),
